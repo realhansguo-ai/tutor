@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>交互图</title>
+<style>
+  :root { --fg:#1f2328; --muted:#6b7280; --grid:#e5e7eb; --bg:#ffffff; --panel:#f6f8fa; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e6edf3; --muted:#9aa4b2; --grid:#30363d; --bg:#0d1117; --panel:#161b22; }
+  }
+  body { margin:0; padding:24px; font-family:-apple-system,"PingFang SC","Noto Sans SC",sans-serif; color:var(--fg); background:var(--bg); }
+  main { max-width:880px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 6px; }
+  .prompt { color:var(--muted); margin:0 0 16px; line-height:1.6; }
+  .layout { display:flex; flex-wrap:wrap; gap:20px; align-items:flex-start; }
+  svg { flex:1 1 480px; max-width:560px; height:auto; background:var(--bg); }
+  .panel { flex:1 1 240px; background:var(--panel); border-radius:8px; padding:14px 16px; }
+  .control { margin-bottom:14px; }
+  .control label { display:flex; justify-content:space-between; font-size:14px; margin-bottom:4px; }
+  .control input { width:100%; }
+  .readouts { font-size:14px; border-top:1px solid var(--grid); padding-top:10px; margin-top:6px; }
+  .readouts div { display:flex; justify-content:space-between; padding:2px 0; }
+  button { margin-top:10px; padding:6px 12px; border-radius:6px; border:1px solid var(--grid); background:var(--bg); color:var(--fg); cursor:pointer; }
+  .note { color:var(--muted); font-size:13px; margin-top:16px; line-height:1.6; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <p class="prompt" id="prompt"></p>
+  <div class="layout">
+    <svg id="plot" viewBox="0 0 560 420" role="img"></svg>
+    <div class="panel">
+      <div id="controls"></div>
+      <div class="readouts" id="readouts"></div>
+      <button id="reset" type="button">恢复初始值</button>
+    </div>
+  </div>
+  <p class="note" id="note"></p>
+</main>
+<script>
+/* ===== 只修改 FIGURE 配置；下方绘图代码保持不变 ===== */
+const FIGURE = {
+  title: "供给与需求：需求变化如何移动均衡",
+  prompt: "先预测：需求截距 a 增加时，均衡价格和数量分别怎样变化？再拖动滑块验证。",
+  note: "示意图：线性需求 P = a − bQ，线性供给 P = c + dQ。灰色虚线为初始状态。",
+  xLabel: "数量 Q", yLabel: "价格 P",
+  xRange: [0, 100], yRange: [0, 100],
+  params: [
+    { id: "a", label: "需求截距 a", min: 40, max: 100, step: 1, value: 70 },
+    { id: "b", label: "需求斜率 b", min: 0.2, max: 2, step: 0.1, value: 0.8 },
+    { id: "c", label: "供给截距 c", min: 0, max: 40, step: 1, value: 10 },
+    { id: "d", label: "供给斜率 d", min: 0.2, max: 2, step: 0.1, value: 0.6 }
+  ],
+  // 曲线二选一：y(x, p) 给出 y 关于 x 的函数；x(y, p) 给出 x 关于 y 的函数（用于竖直或向右的曲线）
+  curves: [
+    { label: "需求 D", color: "#2563eb", y: (x, p) => p.a - p.b * x },
+    { label: "供给 S", color: "#dc2626", y: (x, p) => p.c + p.d * x }
+  ],
+  // 需要标出的点（如均衡点），由与正文相同的公式计算
+  points: (p) => {
+    const q = (p.a - p.c) / (p.b + p.d);
+    return q > 0 ? [{ x: q, y: p.c + p.d * q, label: "E" }] : [];
+  },
+  // 读数：p 是当前参数，p0 是初始参数（可用来显示相对初始状态的变化）
+  readouts: (p, p0) => {
+    const eq = (s) => { const q = (s.a - s.c) / (s.b + s.d); return { q, p: s.c + s.d * q }; };
+    const now = eq(p), base = eq(p0);
+    if (now.q <= 0) return [["均衡", "不存在（需求截距低于供给截距）"]];
+    const sign = (v) => (v >= 0 ? "+" : "") + v.toFixed(1);
+    return [["均衡数量 Q*", now.q.toFixed(1) + "（" + sign(now.q - base.q) + "）"],
+            ["均衡价格 P*", now.p.toFixed(1) + "（" + sign(now.p - base.p) + "）"]];
+  },
+  showBaseline: true,
+  // 可选：象限图。给出分界线位置和四个象限标签（右上、左上、左下、右下），以及散点
+  quadrants: null,   // 例：{ x: 50, y: 50, labels: ["高—高", "低—高", "低—低", "高—低"] }
+  items: []          // 例：[{ x: 70, y: 80, label: "某国" }]
+};
+/* ===== 配置结束 ===== */
+
+const W = 560, H = 420, M = { l: 56, r: 20, t: 20, b: 48 };
+const svg = document.getElementById("plot");
+const NS = "http://www.w3.org/2000/svg";
+const init = Object.fromEntries(FIGURE.params.map(q => [q.id, q.value]));
+let cur = { ...init };
+
+const sx = v => M.l + (v - FIGURE.xRange[0]) / (FIGURE.xRange[1] - FIGURE.xRange[0]) * (W - M.l - M.r);
+const sy = v => H - M.b - (v - FIGURE.yRange[0]) / (FIGURE.yRange[1] - FIGURE.yRange[0]) * (H - M.t - M.b);
+const inside = (x, y) => x >= FIGURE.xRange[0] && x <= FIGURE.xRange[1] && y >= FIGURE.yRange[0] && y <= FIGURE.yRange[1];
+
+function el(tag, attrs, text) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text !== undefined) n.textContent = text;
+  svg.appendChild(n);
+  return n;
+}
+
+function curvePath(c, p) {
+  const segs = []; let open = false; const N = 240;
+  for (let i = 0; i <= N; i++) {
+    let x, y;
+    if (c.y) { x = FIGURE.xRange[0] + (FIGURE.xRange[1] - FIGURE.xRange[0]) * i / N; y = c.y(x, p); }
+    else { y = FIGURE.yRange[0] + (FIGURE.yRange[1] - FIGURE.yRange[0]) * i / N; x = c.x(y, p); }
+    if (Number.isFinite(x) && Number.isFinite(y) && inside(x, y)) {
+      segs.push((open ? "L" : "M") + sx(x).toFixed(1) + " " + sy(y).toFixed(1)); open = true;
+    } else open = false;
+  }
+  return segs.join(" ");
+}
+
+function draw() {
+  svg.replaceChildren();
+  svg.setAttribute("aria-label", FIGURE.title);
+  const [x0, x1] = FIGURE.xRange, [y0, y1] = FIGURE.yRange;
+  for (let i = 0; i <= 5; i++) {
+    const xv = x0 + (x1 - x0) * i / 5, yv = y0 + (y1 - y0) * i / 5;
+    el("line", { x1: sx(xv), y1: sy(y0), x2: sx(xv), y2: sy(y1), stroke: "var(--grid)" });
+    el("line", { x1: sx(x0), y1: sy(yv), x2: sx(x1), y2: sy(yv), stroke: "var(--grid)" });
+    el("text", { x: sx(xv), y: H - M.b + 18, "text-anchor": "middle", "font-size": 12, fill: "var(--muted)" }, +xv.toFixed(2));
+    el("text", { x: M.l - 8, y: sy(yv) + 4, "text-anchor": "end", "font-size": 12, fill: "var(--muted)" }, +yv.toFixed(2));
+  }
+  el("line", { x1: sx(x0), y1: sy(y0), x2: sx(x1), y2: sy(y0), stroke: "var(--fg)" });
+  el("line", { x1: sx(x0), y1: sy(y0), x2: sx(x0), y2: sy(y1), stroke: "var(--fg)" });
+  el("text", { x: (M.l + W - M.r) / 2, y: H - 8, "text-anchor": "middle", "font-size": 14, fill: "var(--fg)" }, FIGURE.xLabel);
+  el("text", { x: 16, y: (M.t + H - M.b) / 2, "text-anchor": "middle", "font-size": 14, fill: "var(--fg)",
+               transform: `rotate(-90 16 ${(M.t + H - M.b) / 2})` }, FIGURE.yLabel);
+
+  if (FIGURE.quadrants) {
+    const q = FIGURE.quadrants;
+    el("line", { x1: sx(q.x), y1: sy(y0), x2: sx(q.x), y2: sy(y1), stroke: "var(--muted)", "stroke-dasharray": "6 4" });
+    el("line", { x1: sx(x0), y1: sy(q.y), x2: sx(x1), y2: sy(q.y), stroke: "var(--muted)", "stroke-dasharray": "6 4" });
+    const pos = [[(q.x + x1) / 2, (q.y + y1) / 2], [(x0 + q.x) / 2, (q.y + y1) / 2], [(x0 + q.x) / 2, (y0 + q.y) / 2], [(q.x + x1) / 2, (y0 + q.y) / 2]];
+    q.labels.forEach((t, i) => el("text", { x: sx(pos[i][0]), y: sy(pos[i][1]), "text-anchor": "middle", "font-size": 14, fill: "var(--muted)", opacity: 0.8 }, t));
+  }
+
+  const changed = FIGURE.params.some(q => cur[q.id] !== init[q.id]);
+  if (FIGURE.showBaseline && changed) {
+    FIGURE.curves.forEach(c => el("path", { d: curvePath(c, init), fill: "none", stroke: "var(--muted)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }));
+    (FIGURE.points ? FIGURE.points(init) : []).forEach(pt => {
+      if (inside(pt.x, pt.y)) el("circle", { cx: sx(pt.x), cy: sy(pt.y), r: 4, fill: "var(--muted)" });
+    });
+  }
+
+  FIGURE.curves.forEach((c, i) => {
+    el("path", { d: curvePath(c, cur), fill: "none", stroke: c.color, "stroke-width": 2.5 });
+    el("text", { x: W - M.r - 4, y: M.t + 16 + i * 18, "text-anchor": "end", "font-size": 13, fill: c.color }, c.label);
+  });
+
+  (FIGURE.points ? FIGURE.points(cur) : []).forEach(pt => {
+    if (!inside(pt.x, pt.y)) return;
+    el("line", { x1: sx(pt.x), y1: sy(pt.y), x2: sx(pt.x), y2: sy(y0), stroke: "var(--muted)", "stroke-dasharray": "3 3" });
+    el("line", { x1: sx(pt.x), y1: sy(pt.y), x2: sx(x0), y2: sy(pt.y), stroke: "var(--muted)", "stroke-dasharray": "3 3" });
+    el("circle", { cx: sx(pt.x), cy: sy(pt.y), r: 5, fill: "var(--fg)" });
+    el("text", { x: sx(pt.x) + 8, y: sy(pt.y) - 8, "font-size": 13, fill: "var(--fg)" }, pt.label);
+  });
+
+  (FIGURE.items || []).forEach(it => {
+    if (!inside(it.x, it.y)) return;
+    el("circle", { cx: sx(it.x), cy: sy(it.y), r: 5, fill: it.color || "#7c3aed" });
+    el("text", { x: sx(it.x) + 8, y: sy(it.y) + 4, "font-size": 13, fill: "var(--fg)" }, it.label);
+  });
+
+  const box = document.getElementById("readouts");
+  box.replaceChildren();
+  (FIGURE.readouts ? FIGURE.readouts(cur, init) : []).forEach(([k, v]) => {
+    const row = document.createElement("div");
+    const a = document.createElement("span"); a.textContent = k;
+    const b = document.createElement("strong"); b.textContent = v;
+    row.append(a, b); box.appendChild(row);
+  });
+}
+
+function buildControls() {
+  const box = document.getElementById("controls");
+  box.replaceChildren();
+  FIGURE.params.forEach(q => {
+    const wrap = document.createElement("div"); wrap.className = "control";
+    const lab = document.createElement("label");
+    const name = document.createElement("span"); name.textContent = q.label;
+    const val = document.createElement("span"); val.textContent = cur[q.id];
+    lab.append(name, val);
+    const input = document.createElement("input");
+    Object.assign(input, { type: "range", min: q.min, max: q.max, step: q.step, value: cur[q.id] });
+    input.setAttribute("aria-label", q.label);
+    input.addEventListener("input", () => { cur[q.id] = Number(input.value); val.textContent = input.value; draw(); });
+    wrap.append(lab, input); box.appendChild(wrap);
+  });
+}
+
+document.getElementById("title").textContent = FIGURE.title;
+document.getElementById("prompt").textContent = FIGURE.prompt || "";
+document.getElementById("note").textContent = FIGURE.note || "";
+document.title = FIGURE.title;
+document.getElementById("reset").addEventListener("click", () => { cur = { ...init }; buildControls(); draw(); });
+if (!FIGURE.params.length) document.getElementById("reset").hidden = true;
+buildControls();
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+interface:
+  display_name: "tutor"
+  short_description: "学习效率引擎：定目标、画领域地图、重构资料、出题批改、间隔复习与阶段验收"
+  default_prompt: "使用 $tutor 帮我系统学会这个领域：先确定目标和起点，再按单元学习、练习和复习。"

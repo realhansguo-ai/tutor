@@ -1,0 +1,12 @@
+# 内部记录：交接说明、验证报告、原始设计 prompt
+HANDOFF.md
+reviews/
+00_prompt.md
+
+# 评测样本、预期答案与运行记录
+skills/tutor/evals/
+
+# 缓存与系统文件
+__pycache__/
+*.pyc
+.DS_Store
